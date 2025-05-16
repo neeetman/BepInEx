@@ -85,7 +85,15 @@ public class IL2CPPChainloader : BaseChainloader<BasePlugin>
             {
                 if (ConfigUnityLogging.Value)
                 {
-                    Logger.Sources.Add(new IL2CPPUnityLogSource());
+                    try
+                    {
+                        Logger.Sources.Add(new IL2CPPUnityLogSource());
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log(LogLevel.Error, "Failed to hook Unity log callback");
+                        Logger.Log(LogLevel.Error, ex);
+                    }
 
                     Application.CallLogCallback("Test call after applying unity logging hook", "", LogType.Assert,
                                                 true);

@@ -23,8 +23,7 @@ internal static class Entrypoint
                                  $"preloader_{DateTime.Now:yyyyMMdd_HHmmss_fff}.log";
         Mutex mutex = null;
 
-        try
-        {
+        try {
             EnvVars.LoadVars();
 
             silentExceptionLog =
@@ -38,36 +37,31 @@ internal static class Entrypoint
 
             UnityPreloaderRunner.PreloaderMain();
         }
-        catch (Exception ex)
-        {
+        catch (Exception ex) {
             File.WriteAllText(silentExceptionLog, ex.ToString());
 
-            try
-            {
-                if (PlatformHelper.Is(Platform.Windows))
-                {
+            try {
+                if (PlatformHelper.Is(Platform.Windows)) {
                     MessageBox.Show("Failed to start BepInEx", "BepInEx");
                 }
-                else if (NotifySend.IsSupported)
-                {
+                else if (NotifySend.IsSupported) {
                     NotifySend.Send("Failed to start BepInEx", "Check logs for details");
                 }
-                else if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BEPINEX_FAIL_FAST")))
-                {
+                else if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("BEPINEX_FAIL_FAST"))) {
                     // Don't exit the game if we have no way of signaling to the user that a crash happened
                     return;
                 }
             }
-            catch (Exception)
-            {
+            catch (Exception) {
                 // ignored
             }
 
             Environment.Exit(1);
         }
-        finally
-        {
+        finally {
             mutex?.ReleaseMutex();
         }
+
+        //MessageBox.Show("BepInEx Started", "BepInEx");
     }
 }

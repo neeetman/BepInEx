@@ -121,9 +121,14 @@ internal static class PlatformUtils
         }
         else
         {
-            // Detect ARM based on PE info or uname.
-            typeof(object).Module.GetPEKind(out var peKind, out var machine);
-            if (machine == (ImageFileMachine) 0x01C4 /* ARM, .NET Framework 4.5 */)
+            //// Detect ARM based on PE info or uname.
+            //typeof(object).Module.GetPEKind(out var peKind, out var machine);
+            //if (machine == (ImageFileMachine) 0x01C4 /* ARM, .NET Framework 4.5 */)
+            //    current |= Platform.ARM;
+
+            // Attempt alternative ARM detection
+            string arch = Environment.GetEnvironmentVariable("PROCESSOR_ARCHITECTURE")?.ToLowerInvariant();
+            if (!string.IsNullOrEmpty(arch) && (arch.Contains("arm") || arch.Contains("aarch")))
                 current |= Platform.ARM;
         }
 

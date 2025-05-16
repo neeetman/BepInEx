@@ -1,28 +1,84 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using BepInEx.Preloader.Core;
+using BepInEx.Logging;
 using Mono.Cecil;
 using MonoMod.Utils;
+using System.Text;
 
 namespace BepInEx.Unity.Mono.Preloader.Utils;
 
 internal static class MonoAssemblyHelper
 {
+    private static readonly string _debugLogPath =
+        Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)
+                     ?? Environment.CurrentDirectory,
+                     "MonoAsmHelper.debug.log");
+
+    private static IntPtr _monoLib;
+    private static ImageOpenDelegate imageOpen;
+    private static AssemblyLoadDelegate assemblyLoad;
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate IntPtr ImageOpenDelegate(
+    IntPtr data, uint dataLength, bool needCopy,
+    out MonoImageOpenStatus status, bool refOnly,
+    [MarshalAs(UnmanagedType.LPStr)] string name);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate IntPtr AssemblyLoadDelegate(
+        IntPtr image,
+        [MarshalAs(UnmanagedType.LPStr)] string fileName,
+        out MonoImageOpenStatus status,
+        bool refOnly);
+
+    private enum MonoImageOpenStatus
+    {
+        MONO_IMAGE_OK,
+        MONO_IMAGE_ERROR_ERRNO,
+        MONO_IMAGE_MISSING_ASSEMBLYREF,
+        MONO_IMAGE_IMAGE_INVALID
+    }
+
     static MonoAssemblyHelper()
     {
-        // We can't use mono's __Internal because on Windows it will use GetModuleHandleW(NULL) that will
-        // in turn return the module to the EXE and not mono.dll (at least on Unity versions < 5).
-        typeof(MonoAssemblyHelper).ResolveDynDllImports(new()
-        {
-            ["mono"] = new()
-            {
-                EnvVars.DOORSTOP_MONO_LIB_PATH
-            }
-        });
+        var monoPath = Environment.GetEnvironmentVariable("DOORSTOP_MONO_LIB_PATH");
+
+        _monoLib = LoadLibrary(monoPath);
+        if (_monoLib == IntPtr.Zero)
+            throw new DllNotFoundException($"Failed to load mono runtime from '{monoPath}'");
+
+        var ptrOpen = GetProcAddress(_monoLib, "mono_image_open_from_data_with_name");
+        if (ptrOpen == IntPtr.Zero)
+            throw new EntryPointNotFoundException("mono_image_open_from_data_with_name");
+
+        imageOpen = (ImageOpenDelegate)Marshal.GetDelegateForFunctionPointer(
+            ptrOpen,
+            typeof(ImageOpenDelegate)
+        );
+
+        var ptrLoad = GetProcAddress(_monoLib, "mono_assembly_load_from_full");
+        if (ptrLoad == IntPtr.Zero)
+            throw new EntryPointNotFoundException("mono_assembly_load_from_full");
+        assemblyLoad = (AssemblyLoadDelegate)Marshal.GetDelegateForFunctionPointer(
+            ptrLoad,
+            typeof(AssemblyLoadDelegate)
+        );
     }
+
+    private static void WriteDebug(string line)
+    {
+        try {
+            File.AppendAllText(_debugLogPath,
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {line}{Environment.NewLine}");
+        }
+        catch {
+        }
+    }
+
 
     private static ReadAssemblyResult ReadAssemblyData(string filePath)
     {
@@ -63,28 +119,6 @@ internal static class MonoAssemblyHelper
         return ReadAssemblyData(fullPath).Load(fullPath);
     }
 
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate nint ImageOpenDelegate(nint data,
-                                            uint dataLength,
-                                            bool needCopy,
-                                            out MonoImageOpenStatus status,
-                                            bool refOnly,
-                                            [MarshalAs(UnmanagedType.LPStr)] string name);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate nint AssemblyLoadDelegate(nint image,
-                                               [MarshalAs(UnmanagedType.LPStr)] string fileName,
-                                               out MonoImageOpenStatus status,
-                                               bool refOnly);
-
-    private enum MonoImageOpenStatus
-    {
-        MONO_IMAGE_OK,
-        MONO_IMAGE_ERROR_ERRNO,
-        MONO_IMAGE_MISSING_ASSEMBLYREF,
-        MONO_IMAGE_IMAGE_INVALID
-    }
-
     private class ReadAssemblyResult
     {
         public byte[] AssemblyData;
@@ -109,11 +143,20 @@ internal static class MonoAssemblyHelper
             }
         }
     }
-#pragma warning disable CS0649
-    [DynDllImport("mono", "mono_image_open_from_data_with_name")]
-    private static ImageOpenDelegate imageOpen;
 
-    [DynDllImport("mono", "mono_assembly_load_from_full")]
-    private static AssemblyLoadDelegate assemblyLoad;
-#pragma warning restore CS0649
+
+    [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr LoadLibrary(string lpFileName);
+
+    [DllImport("kernel32", CharSet = CharSet.Ansi, ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
+//#pragma warning disable CS0649
+//    [DynDllImport("mono", "mono_image_open_from_data_with_name")]
+//    private static ImageOpenDelegate imageOpen;
+
+//    [DynDllImport("mono", "mono_assembly_load_from_full")]
+//    private static AssemblyLoadDelegate assemblyLoad;
+//#pragma warning restore CS0649
+
 }

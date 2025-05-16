@@ -11,6 +11,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using AsmResolver.DotNet;
 using BepInEx.Configuration;
 using BepInEx.Logging;
 using BepInEx.Unity.Common;
@@ -29,7 +30,6 @@ using Il2CppInterop.HarmonySupport;
 using Il2CppInterop.Runtime.Startup;
 using LibCpp2IL;
 using Microsoft.Extensions.Logging;
-using Mono.Cecil;
 using MonoMod.Utils;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 using MSLoggerFactory = Microsoft.Extensions.Logging.LoggerFactory;
@@ -269,11 +269,11 @@ internal static partial class Il2CppInteropManager
             {
                 var dummyPath = Path.Combine(Paths.BepInExRootPath, "dummy");
                 Directory.CreateDirectory(dummyPath);
-                foreach (var assemblyDefinition in cecilAssemblies)
-                    assemblyDefinition.Write(Path.Combine(dummyPath, $"{assemblyDefinition.Name.Name}.dll"));
+                foreach (var assemblyDefinition in asmResolverAssemblies)
+                    assemblyDefinition.Write(Path.Combine(dummyPath, $"{assemblyDefinition.Name}.dll"));
             }
 
-            RunIl2CppInteropGenerator(cecilAssemblies);
+            RunIl2CppInteropGenerator(asmResolverAssemblies);
 
             File.WriteAllText(HashPath, ComputeHash());
         }
@@ -310,7 +310,7 @@ internal static partial class Il2CppInteropManager
         }
     }
 
-    private static List<AsmResolver.DotNet.AssemblyDefinition> RunCpp2Il()
+    private static List<AssemblyDefinition> RunCpp2Il()
     {
         var metadataPath = Path.Combine(Paths.GameRootPath,
                                         GlobalMetadataPath.Value
@@ -388,7 +388,6 @@ internal static partial class Il2CppInteropManager
                               .AddInteropAssemblyGenerator()
                               .Run();
 
-        sourceAssemblies.Do(x => x.Dispose());
     }
 
     internal static void PreloadInteropAssemblies()
