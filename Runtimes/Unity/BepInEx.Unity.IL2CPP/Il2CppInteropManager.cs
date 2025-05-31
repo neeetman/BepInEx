@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Runtime.InteropServices;
 using System.Linq;
 using System.Net.Http;
 using System.Reflection;
@@ -29,10 +30,14 @@ using Il2CppInterop.Generator.Runners;
 using Il2CppInterop.HarmonySupport;
 using Il2CppInterop.Runtime.Startup;
 using LibCpp2IL;
+using Reloaded.Memory.Sigscan;
 using Microsoft.Extensions.Logging;
 using MonoMod.Utils;
 using LogLevel = Microsoft.Extensions.Logging.LogLevel;
 using MSLoggerFactory = Microsoft.Extensions.Logging.LoggerFactory;
+using Reloaded.Memory.Sigscan.Definitions;
+using Reloaded.Memory.Sigscan.Definitions.Structs;
+using Reloaded.Memory;
 
 namespace BepInEx.Unity.IL2CPP;
 
@@ -312,13 +317,20 @@ internal static partial class Il2CppInteropManager
 
     private static List<AssemblyDefinition> RunCpp2Il()
     {
-        var metadataPath = Path.Combine(Paths.GameRootPath,
-                                        GlobalMetadataPath.Value
-                                                          .Replace("{BepInEx}", Paths.BepInExRootPath)
-                                                          .Replace("{ProcessName}", Paths.ProcessName)
-                                                          .Replace("{GameDataPath}", Paths.GameDataPath));
-        
+        var rawValue = GlobalMetadataPath.Value;
+        var metadataPath = Path.Combine( 
+            Paths.GameRootPath,
+            rawValue
+                .Replace("{BepInEx}", Paths.BepInExRootPath)
+                .Replace("{ProcessName}", Paths.ProcessName)
+                .Replace("{GameDataPath}", Paths.GameDataPath)
+        );
+
         Logger.LogMessage("Running Cpp2IL to generate dummy assemblies from " + metadataPath);
+
+        if (rawValue.Contains("{BepInEx}")) {
+            MetadataDumper.DumpDecryptedGlobalMetadata(metadataPath);
+        }
 
         var stopwatch = new Stopwatch();
         stopwatch.Start();
@@ -416,5 +428,149 @@ internal static partial class Il2CppInteropManager
         });
 
         Logger.LogDebug($"Preloaded {loaded} interop assemblies in {sw.ElapsedMilliseconds}ms");
+    }
+}
+
+
+public static class MetadataDumper
+{
+    private static readonly ManualLogSource Logger = BepInEx.Logging.Logger.CreateLogSource("MetadataDumper");
+
+    // P/Invoke：VirtualQuery 用于遍历当前进程的内存区域信息
+    [DllImport("kernel32.dll")]
+    private static extern UIntPtr VirtualQuery(
+        IntPtr lpAddress,
+        out MEMORY_BASIC_INFORMATION lpBuffer,
+        UIntPtr dwLength);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORY_BASIC_INFORMATION
+    {
+        public IntPtr BaseAddress;
+        public IntPtr AllocationBase;
+        public uint AllocationProtect;
+        public UIntPtr RegionSize;
+        public uint State;
+        public uint Protect;
+        public uint Type;
+    }
+
+    private const uint MEM_COMMIT = 0x1000;
+    private const uint PAGE_NOACCESS = 0x01;
+    private const uint PAGE_GUARD = 0x100;
+    private const uint PAGE_READONLY = 0x02;
+    private const uint PAGE_READWRITE = 0x04;
+    private const uint PAGE_EXECUTE_READ = 0x20;
+    private const uint PAGE_EXECUTE_READWRITE = 0x40;
+
+    /// <summary>
+    /// 在整个进程内存中逐段扫描，利用 Reloaded.Memory.Sigscan.Scanner 找到第一个匹配带通配符模式的位置。
+    /// 找到后返回匹配的绝对地址（IntPtr）。如果没找到会抛出 InvalidOperationException。
+    /// </summary>
+    private static IntPtr FindPatternEntireProcess(Process proc, string pattern)
+    {
+        IntPtr addr = IntPtr.Zero;
+        int mbiSize = Marshal.SizeOf(typeof(MEMORY_BASIC_INFORMATION));
+
+        // 用 Reloaded.Memory 提供的 ExternalMemory 来读取任意内存区域
+        var mem = new ExternalMemory(proc);
+
+        while (true) {
+            // 拿到从 addr 开始的下一个 region 描述
+            UIntPtr result = VirtualQuery(addr, out MEMORY_BASIC_INFORMATION mbi, (UIntPtr)mbiSize);
+            if (result == UIntPtr.Zero)
+                break;
+
+            bool isCommitted = (mbi.State & MEM_COMMIT) != 0;
+            bool noAccess = (mbi.Protect & PAGE_NOACCESS) != 0;
+            bool isGuard = (mbi.Protect & PAGE_GUARD) != 0;
+
+            if (isCommitted && !noAccess && !isGuard) {
+                bool canRead =
+                    (mbi.Protect & PAGE_READONLY) != 0 ||
+                    (mbi.Protect & PAGE_READWRITE) != 0 ||
+                    (mbi.Protect & PAGE_EXECUTE_READ) != 0 ||
+                    (mbi.Protect & PAGE_EXECUTE_READWRITE) != 0;
+
+                if (canRead) {
+                    long regionBase = mbi.BaseAddress.ToInt64();
+                    long regionSizeL = (long)mbi.RegionSize;
+                    if (regionSizeL <= 0) {
+                        // 跳过大小为 0 的区域
+                        goto NextRegion;
+                    }
+
+                    // 如果区域过大，分块读取也行；但这里假设每块不超过 int.MaxValue
+                    int regionSize = regionSizeL > int.MaxValue ? int.MaxValue : (int)regionSizeL;
+
+                    try {
+                        // 直接从目标进程里把这一段“大小”为 regionSize 的原始数据读出来
+                        byte[] regionBytes = mem.ReadRaw((nuint)(nint)regionBase, regionSize);
+
+                        // 用第三方的 Scanner 在本地 byte[] 里找 pattern
+                        using var scanner = new Scanner(regionBytes);
+                        PatternScanResult resultPattern = scanner.FindPattern(pattern);
+                        if (resultPattern.Found) {
+                            // 找到后，计算“全局地址” = regionBase + (找到的偏移)
+                            long matchAddress = regionBase + resultPattern.Offset;
+                            return new IntPtr(matchAddress);
+                        }
+                    }
+                    catch {
+                        // 可能某些页在瞬时变成不可读，这里忽略
+                    }
+                }
+            }
+
+        NextRegion:
+            // 跳到下一个 region
+            long nextAddr = mbi.BaseAddress.ToInt64() + (long)mbi.RegionSize;
+            if (nextAddr <= addr.ToInt64())
+                break; // 防止回绕
+            addr = new IntPtr(nextAddr);
+        }
+
+        throw new InvalidOperationException($"Pattern \"{pattern}\" not found in process memory.");
+    }
+
+    /// <summary>
+    /// 利用 Reloaded.Memory.Sigscan.Scanner，在整个进程内存里搜索通配符模式，
+    /// 一旦找到，就把从匹配地址开始的 diskSize 字节读出来写到 targetPath。
+    /// </summary>
+    public static void DumpDecryptedGlobalMetadata(string targetPath)
+    {
+        // —— 1. 取原始磁盘上的 global-metadata.dat 大小 —— 
+        string defaultPath = Path.Combine(Paths.GameDataPath, "il2cpp_data", "Metadata", "global-metadata.dat");
+        if (!File.Exists(defaultPath))
+            throw new FileNotFoundException("Default global-metadata.dat not found", defaultPath);
+
+        long diskSize = new FileInfo(defaultPath).Length;
+        if (diskSize <= 0)
+            throw new InvalidOperationException("Original global-metadata.dat size is invalid.");
+
+        // 确保目标目录存在
+        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+
+        // —— 2. 在整个进程地址空间里找通配符模式 —— 
+        var proc = Process.GetCurrentProcess();
+        // 你自己的特征字节：“AF 1B B1 FA ?? 00 00 00”
+        string pattern = "AF 1B B1 FA ?? 00 00 00";
+        IntPtr matchAddress = FindPatternEntireProcess(proc, pattern);
+
+        // —— 3. 从 matchAddress 一次性拷贝 diskSize 字节到 byte[] —— 
+        byte[] buffer = new byte[diskSize];
+        try {
+            // 因为是当前进程的地址空间，直接 Marshal.Copy 就能搬运
+            Marshal.Copy(matchAddress, buffer, 0, (int)diskSize);
+        }
+        catch (Exception ex) {
+            throw new InvalidOperationException(
+                $"Failed to read {diskSize} bytes from address 0x{matchAddress.ToInt64():X}.", ex);
+        }
+
+        // —— 4. 写到磁盘 —— 
+        File.WriteAllBytes(targetPath, buffer);
+
+        Logger.LogInfo($"Dumped decrypted global-metadata.dat ({diskSize} bytes) to {targetPath}");
     }
 }
