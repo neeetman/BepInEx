@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -267,7 +267,8 @@ public class ConfigFile : IDictionary<ConfigDefinition, ConfigEntryBase>
 
             var currentSection = string.Empty;
 
-            foreach (var rawLine in File.ReadAllLines(ConfigFilePath))
+            foreach (var rawLine in File.ReadAllText(ConfigFilePath)
+                                       .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.None)) 
             {
                 var line = rawLine.Trim();
 

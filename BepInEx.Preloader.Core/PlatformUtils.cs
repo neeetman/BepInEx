@@ -49,7 +49,10 @@ internal static class PlatformUtils
             platID = p_Platform.GetValue(null, new object[0]).ToString();
         else
             // For .NET and newer Mono, use the usual value.
-            platID = Environment.OSVersion.Platform.ToString();
+            //platID = Environment.OSVersion.Platform.ToString();
+            platID = Environment.OSVersion.VersionString;
+
+
         platID = platID.ToLowerInvariant();
 
         if (platID.Contains("win"))

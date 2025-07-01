@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using BepInEx.Logging;
 using UnityEngine;
@@ -48,21 +48,29 @@ public class UnityLogSource : ILogSource
 
     static UnityLogSource()
     {
-        var callback = new Application.LogCallback(OnUnityLogMessageReceived);
+        try
+        {
+            var callback = new Application.LogCallback(OnUnityLogMessageReceived);
 
-        var logEvent =
-            typeof(Application).GetEvent("logMessageReceived", BindingFlags.Public | BindingFlags.Static);
-        if (logEvent != null)
-        {
-            logEvent.AddEventHandler(null, callback);
-            //UnsubscribeAction = () => logEvent.RemoveEventHandler(null, callback);
+            var logEvent = typeof(Application)
+                               .GetEvent("logMessageReceived",
+                                         BindingFlags.Public | BindingFlags.Static);
+            if (logEvent != null)
+            {
+                logEvent.AddEventHandler(null, callback);
+            }
+            else
+            {
+                var registerLogCallback = typeof(Application)
+                    .GetMethod("RegisterLogCallback",
+                               BindingFlags.Public | BindingFlags.Static);
+                if (registerLogCallback != null)
+                    registerLogCallback.Invoke(null, new object[] { callback });
+            }
         }
-        else
+        catch (Exception ex)
         {
-            var registerLogCallback =
-                typeof(Application).GetMethod("RegisterLogCallback", BindingFlags.Public | BindingFlags.Static);
-            registerLogCallback.Invoke(null, new object[] { callback });
-            //UnsubscribeAction = () => registerLogCallback.Invoke(null, new object[] { null });
+            Console.WriteLine($"[BepInEx] UnityLogSource init skipped: {ex.Message}");
         }
     }
 

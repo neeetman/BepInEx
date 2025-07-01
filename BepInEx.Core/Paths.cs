@@ -15,9 +15,20 @@ public static class Paths
     /// <summary>
     ///    BepInEx version.
     /// </summary>
-    public static Version BepInExVersion { get; } =
-        Version.Parse(MetadataHelper.GetAttributes<AssemblyInformationalVersionAttribute>(typeof(Paths).Assembly)[0]
-                                    .InformationalVersion);
+    public static Version BepInExVersion { get; } = GetBepInExVersion();
+
+    private static Version GetBepInExVersion()
+    {
+        try {
+            //var attrs = MetadataHelper.GetAttributes<AssemblyInformationalVersionAttribute>(typeof(Paths).Assembly);
+            //if (attrs != null && attrs.Length > 0 && !string.IsNullOrEmpty(attrs[0].InformationalVersion))
+            //    return Version.Parse(attrs[0].InformationalVersion);
+        }
+        catch {
+            // ignored: 裁剪 Mono 下，attribute 可能会崩
+        }
+        return new Version(0, 0, 0);
+    }
 
     /// <summary>
     ///     The path to the Managed folder that contains the main managed assemblies.
